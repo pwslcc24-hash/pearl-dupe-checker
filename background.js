@@ -139,8 +139,7 @@ async function fetchPage(url, timeoutMs = 8000) {
 }
 
 // Find likely contact/hours subpage URLs by scanning the root page for relevant links
-// and appending common paths. Returns absolute URLs on the same origin, sorted so
-// dedicated hours/location pages are tried before generic contact/about pages.
+// and appending common paths. Returns absolute URLs on the same origin.
 function findHoursSubpages(siteRoot, rootHtml) {
   const candidates = new Set();
   const origin = (() => { try { return new URL(siteRoot).origin; } catch (e) { return ""; } })();
@@ -157,26 +156,14 @@ function findHoursSubpages(siteRoot, rootHtml) {
     } catch (e) {}
   }
 
-  // Always try common paths — plural forms first since "locations" is more specific than "location"
+  // Common paths: contact first (most sites put hours there), then hours-specific, then locations
   const root = siteRoot.replace(/\/$/, "");
-  for (const p of ["/hours", "/office-hours", "/our-hours", "/locations", "/location", "/our-locations",
-                   "/about", "/our-office", "/contact", "/contact-us"]) {
+  for (const p of ["/contact", "/contact-us", "/hours", "/office-hours", "/our-hours",
+                   "/locations", "/location", "/our-locations", "/about", "/our-office"]) {
     candidates.add(root + p);
   }
 
-  // Score: hours > locations > about > contact — so the most likely pages are tried first
-  const score = (u) => {
-    const p = u.toLowerCase();
-    if (/\/hours|\/office-hours|\/our-hours/.test(p)) return 4;
-    if (/location/.test(p)) return 3;
-    if (/about|info/.test(p)) return 2;
-    if (/office/.test(p)) return 1;
-    return 0; // contact, everything else last
-  };
-
-  return [...candidates]
-    .filter((u) => u !== siteRoot && u !== siteRoot + "/")
-    .sort((a, b) => score(b) - score(a));
+  return [...candidates].filter((u) => u !== siteRoot && u !== siteRoot + "/");
 }
 
 // Returns { days, pageUrl } — pageUrl is the exact URL the hours were read from.
@@ -195,16 +182,29 @@ async function fetchHours(siteRoot) {
   }
   if (!rootHtml) throw new Error("unreachable");
 
-  // 1. Try contact/hours subpages first — they have the most accurate, current hours
-  //    and give us the best link for the user to verify.
+  // 1. Try subpages. Text-visible hours are the ground truth — if a page only has JSON-LD
+  //    (e.g. a site-wide schema block in the footer) without displayed hours text, it's not
+  //    the right source link. Keep the first JSON-LD-only result as a fallback but keep
+  //    searching until we find a page with text-visible hours.
   const subpages = findHoursSubpages(rootUrl, rootHtml);
-  for (const url of subpages.slice(0, 6)) {
+  let jsonLdFallback = null;
+  for (const url of subpages.slice(0, 8)) {
     try {
       const html = await fetchPage(url, 6000);
-      // Prefer text parsing for subpages — avoids stale JSON-LD on homepages
-      const days = parseTextHours(html) || parseJsonLd(html);
-      if (days) { console.log("[Pearl Dupe Checker] hours found on subpage:", url); return { days, pageUrl: url }; }
+      const textDays = parseTextHours(html);
+      if (textDays) {
+        console.log("[Pearl Dupe Checker] text hours found on subpage:", url);
+        return { days: textDays, pageUrl: url };
+      }
+      if (!jsonLdFallback) {
+        const jsonDays = parseJsonLd(html);
+        if (jsonDays) jsonLdFallback = { days: jsonDays, pageUrl: url };
+      }
     } catch (e) {}
+  }
+  if (jsonLdFallback) {
+    console.log("[Pearl Dupe Checker] JSON-LD fallback:", jsonLdFallback.pageUrl);
+    return jsonLdFallback;
   }
 
   // 2. Fall back to root page — text first, then JSON-LD
