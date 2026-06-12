@@ -139,7 +139,8 @@ async function fetchPage(url, timeoutMs = 8000) {
 }
 
 // Find likely contact/hours subpage URLs by scanning the root page for relevant links
-// and appending common paths. Returns absolute URLs on the same origin.
+// and appending common paths. Returns absolute URLs on the same origin, sorted so
+// dedicated hours/location pages are tried before generic contact/about pages.
 function findHoursSubpages(siteRoot, rootHtml) {
   const candidates = new Set();
   const origin = (() => { try { return new URL(siteRoot).origin; } catch (e) { return ""; } })();
@@ -148,7 +149,7 @@ function findHoursSubpages(siteRoot, rootHtml) {
   // Scan <a href> for pages whose path suggests hours/contact/location
   const re = /href=["']([^"'#?]+)["']/gi;
   let m;
-  while ((m = re.exec(rootHtml)) && candidates.size < 12) {
+  while ((m = re.exec(rootHtml)) && candidates.size < 20) {
     try {
       const abs = new URL(m[1], siteRoot).href;
       if (!abs.startsWith(origin)) continue;
@@ -156,14 +157,26 @@ function findHoursSubpages(siteRoot, rootHtml) {
     } catch (e) {}
   }
 
-  // Always try common paths regardless of what was in the HTML
+  // Always try common paths — plural forms first since "locations" is more specific than "location"
   const root = siteRoot.replace(/\/$/, "");
-  for (const p of ["/contact", "/contact-us", "/hours", "/office-hours", "/location", "/about", "/our-office"]) {
+  for (const p of ["/hours", "/office-hours", "/our-hours", "/locations", "/location", "/our-locations",
+                   "/about", "/our-office", "/contact", "/contact-us"]) {
     candidates.add(root + p);
   }
 
-  // Dedupe and exclude the root itself
-  return [...candidates].filter((u) => u !== siteRoot && u !== siteRoot + "/");
+  // Score: hours > locations > about > contact — so the most likely pages are tried first
+  const score = (u) => {
+    const p = u.toLowerCase();
+    if (/\/hours|\/office-hours|\/our-hours/.test(p)) return 4;
+    if (/location/.test(p)) return 3;
+    if (/about|info/.test(p)) return 2;
+    if (/office/.test(p)) return 1;
+    return 0; // contact, everything else last
+  };
+
+  return [...candidates]
+    .filter((u) => u !== siteRoot && u !== siteRoot + "/")
+    .sort((a, b) => score(b) - score(a));
 }
 
 // Returns { days, pageUrl } — pageUrl is the exact URL the hours were read from.
