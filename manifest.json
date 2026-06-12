@@ -1,11 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Pearl Dupe Checker",
-  "version": "1.4.0",
-  "description": "Duplicate warning + AI assistant on HubSpot contact and company records.",
+  "version": "1.5.4",
+  "description": "Duplicate warning + open/closed hours on HubSpot contact and company records.",
   "permissions": ["cookies"],
   "host_permissions": [
-    "https://app.hubspot.com/*"
+    "https://app.hubspot.com/*",
+    "http://*/*",
+    "https://*/*"
   ],
   "background": {
     "service_worker": "background.js"

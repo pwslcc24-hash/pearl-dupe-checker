@@ -351,6 +351,188 @@
 
   let widgetExpanded = false; // always start collapsed; only true after user explicitly opens
 
+  // ── Business hours / open-now check ────────────────────────────────────────
+  // After the dupe check renders, the background worker fetches the practice's
+  // website and extracts business hours. We compute open/closed in the
+  // practice's own timezone (from its state) and show a pill on the header.
+
+  const STATE_TZ = (() => {
+    const zones = {
+      "America/New_York":    "ct connecticut de delaware fl florida ga georgia in indiana ky kentucky me maine md maryland ma massachusetts mi michigan nh newhampshire nj newjersey ny newyork nc northcarolina oh ohio pa pennsylvania ri rhodeisland sc southcarolina vt vermont va virginia wv westvirginia dc",
+      "America/Chicago":     "al alabama ar arkansas il illinois ia iowa ks kansas la louisiana mn minnesota ms mississippi mo missouri ne nebraska nd northdakota ok oklahoma sd southdakota tn tennessee tx texas wi wisconsin",
+      "America/Denver":      "co colorado id idaho mt montana nm newmexico ut utah wy wyoming",
+      "America/Phoenix":     "az arizona",
+      "America/Los_Angeles": "ca california nv nevada or oregon wa washington",
+      "America/Anchorage":   "ak alaska",
+      "Pacific/Honolulu":    "hi hawaii",
+    };
+    const map = {};
+    for (const tz in zones) zones[tz].split(" ").forEach((k) => { map[k] = tz; });
+    return map;
+  })();
+  function tzForState(state) { return STATE_TZ[norm(state).replace(/\s+/g, "")] || ""; }
+
+  let hoursKey      = null;  // record key the cached hours belong to
+  let hoursDays     = null;  // { dayIdx(0=Sun) : [{o, c}] } minutes since midnight
+  let hoursTz       = "";
+  let hoursSource   = "";    // URL of the page the hours were found on (the proof)
+  let hoursFetched  = false; // true once the check has completed (success or fail)
+
+  // Recomputed on every pill render so a long-open tab flips open→closed correctly
+  function computeOpenStatus(days, tz) {
+    const SHORT = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+    let idx, nowMin;
+    try {
+      const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: tz || undefined, weekday: "short", hour: "numeric", minute: "numeric", hour12: false,
+      }).formatToParts(new Date());
+      const get = (t) => (parts.find((p) => p.type === t) || {}).value || "";
+      idx = SHORT[get("weekday").toLowerCase()];
+      nowMin = (parseInt(get("hour"), 10) % 24) * 60 + parseInt(get("minute"), 10);
+    } catch (e) {
+      const d = new Date(); idx = d.getDay(); nowMin = d.getHours() * 60 + d.getMinutes();
+    }
+    const today = days[idx] || [];
+    const open = today.some((iv) => nowMin >= iv.o && nowMin < iv.c);
+
+    // Detect lunch break: current time falls in a gap between two sessions on the same day
+    let isLunch = false, minutesUntilReturn = null;
+    if (!open && today.length > 1) {
+      const sorted = [...today].sort((a, b) => a.o - b.o);
+      for (let i = 0; i < sorted.length - 1; i++) {
+        if (nowMin >= sorted[i].c && nowMin < sorted[i + 1].o) {
+          isLunch = true;
+          minutesUntilReturn = sorted[i + 1].o - nowMin;
+          break;
+        }
+      }
+    }
+
+    const fmt = (min) => {
+      const h12 = ((Math.floor(min / 60) + 11) % 12) + 1;
+      return `${h12}:${String(min % 60).padStart(2, "0")} ${min < 720 ? "AM" : "PM"}`;
+    };
+    const todayLabel = today.length ? today.map((iv) => `${fmt(iv.o)}–${fmt(iv.c)}`).join(", ") : "Closed today";
+    return { open, isLunch, minutesUntilReturn, todayLabel };
+  }
+
+  function getOrCreatePill(head) {
+    let pill = head.querySelector(".pdc-hours");
+    if (!pill) {
+      pill = document.createElement("a");
+      pill.className = "pdc-hours";
+      pill.target = "_blank";
+      pill.rel = "noopener";
+      pill.addEventListener("click", (e) => e.stopPropagation());
+      head.insertBefore(pill, head.querySelector(".pdc-controls"));
+    }
+    return pill;
+  }
+
+  function updateHoursPill() {
+    const head = document.querySelector(`#${WIDGET_ID} .pdc-head`);
+    if (!head) return;
+    const pill = getOrCreatePill(head);
+
+    if (!hoursFetched || hoursKey !== lastKey) {
+      // Still loading
+      pill.textContent = "·";
+      pill.href = "#";
+      pill.title = "Checking hours…";
+      pill.className = "pdc-hours pdc-hours-loading";
+      return;
+    }
+
+    if (!hoursDays) {
+      // Check completed but no hours found
+      pill.textContent = "UNKNOWN";
+      pill.href = "#";
+      pill.title = "Couldn't find hours for this practice";
+      pill.className = "pdc-hours pdc-hours-unknown";
+      return;
+    }
+
+    const status = computeOpenStatus(hoursDays, hoursTz);
+    pill.href = hoursSource || "#";
+
+    if (!status.open && status.isLunch && status.minutesUntilReturn != null) {
+      // Convert minutes-until-return to an absolute timestamp, then format in user's local timezone
+      const returnDate = new Date(Date.now() + status.minutesUntilReturn * 60000);
+      const timeParts = new Intl.DateTimeFormat("en-US", {
+        hour: "numeric", minute: "2-digit", hour12: true, timeZoneName: "short",
+      }).formatToParts(returnDate);
+      const get = (t) => (timeParts.find((p) => p.type === t) || {}).value || "";
+      const returnTime = `${get("hour")}:${get("minute")} ${get("dayPeriod")} ${get("timeZoneName")}`;
+      pill.textContent = `LUNCH until ${returnTime}`;
+      pill.title = `Today: ${status.todayLabel}${hoursTz ? " (their local time)" : ""} — click to see source`;
+      pill.className = "pdc-hours pdc-hours-lunch";
+      return;
+    }
+
+    pill.textContent = status.open ? "OPEN" : "CLOSED";
+    pill.title = `Today: ${status.todayLabel}${hoursTz ? " (their local time)" : ""} — click to see source`;
+    pill.className = "pdc-hours " + (status.open ? "pdc-hours-open" : "pdc-hours-closed");
+  }
+
+  async function checkBusinessHours(cur) {
+    const myKey = lastKey;
+
+    // Already fetched for this record — just re-draw the pill
+    if (hoursKey === myKey && hoursFetched) { updateHoursPill(); return; }
+
+    // Show loading pill immediately
+    hoursFetched = false;
+    updateHoursPill();
+
+    // Best source: the record's own website/domain (skip generic providers)
+    let site = "";
+    const rawSite = norm(cur.domain || cur.website || "").replace(/^https?:\/\//, "").replace(/\/.*$/, "").replace(/^www\./, "");
+    if (rawSite && !GENERIC_DOMAINS.has(rawSite)) site = "https://" + rawSite;
+    if (!site) {
+      const ep = (cur.email || "").split("@");
+      if (ep.length === 2 && ep[1] && !GENERIC_DOMAINS.has(norm(ep[1]))) site = "https://" + norm(ep[1]);
+    }
+    // No website on the record → let the background worker web-search for it
+    const bizName = (cur.name || cur.company || "").trim();
+    const query = !site && bizName
+      ? `${bizName} ${cur.city || ""} ${cur.state || ""} hours`.replace(/\s+/g, " ").trim()
+      : "";
+
+    if (!site && !query) {
+      // Nothing to search with — mark unknown immediately
+      hoursKey = myKey; hoursFetched = true; hoursDays = null;
+      updateHoursPill();
+      return;
+    }
+    if (!extensionAlive()) return;
+
+    let resp = null;
+    try {
+      resp = await new Promise((resolve) => {
+        chrome.runtime.sendMessage({ type: "checkHours", site, query }, (r) => {
+          if (chrome.runtime.lastError) return resolve(null);
+          resolve(r);
+        });
+      });
+    } catch (e) { resp = null; }
+
+    if (lastKey !== myKey) return; // user navigated away while we fetched
+
+    hoursKey    = myKey;
+    hoursFetched = true;
+
+    if (!resp || !resp.ok || !resp.days) {
+      hoursDays = null;
+      LOG("Hours lookup: nothing found", resp && resp.error ? `(${resp.error})` : "");
+    } else {
+      hoursDays   = resp.days;
+      hoursTz     = tzForState(cur.state);
+      hoursSource = resp.source || "";
+      LOG(`Hours found via ${resp.source} — ${computeOpenStatus(hoursDays, hoursTz).open ? "OPEN" : "CLOSED"} now`);
+    }
+    updateHoursPill();
+  }
+
   // ── UI helpers ─────────────────────────────────────────────────────────────
 
   const WIDGET_ID = "pearl-dupe-widget";
@@ -368,7 +550,7 @@
   }
   function makeDraggable(wrap, handle) {
     handle.addEventListener("mousedown", (e) => {
-      if (e.target.closest(".pdc-btn")) return;
+      if (e.target.closest(".pdc-btn, .pdc-hours")) return;
       e.preventDefault();
       handle.style.cursor = "grabbing";
       const rect = wrap.getBoundingClientRect();
@@ -506,6 +688,7 @@
     wrap.appendChild(body);
 
     document.body.appendChild(wrap);
+    updateHoursPill(); // restore open/closed pill if we already have hours for this record
 
     // ── Collapse toggle ──
     function setCollapsed(v) {
@@ -514,7 +697,7 @@
       toggleBtn.textContent = v ? "▸" : "▾";
       body.style.display = v ? "none" : "";
     }
-    head.addEventListener("click", (e) => { if (!e.target.closest(".pdc-btn")) setCollapsed(!wrap.classList.contains("pdc-collapsed")); });
+    head.addEventListener("click", (e) => { if (!e.target.closest(".pdc-btn, .pdc-hours")) setCollapsed(!wrap.classList.contains("pdc-collapsed")); });
     toggleBtn.addEventListener("click", (e) => { e.stopPropagation(); setCollapsed(!wrap.classList.contains("pdc-collapsed")); });
 
     // ── Re-check ──
@@ -566,17 +749,20 @@
     lastResult     = null;
     lastResultAt   = 0;
     widgetExpanded = false;
+    hoursFetched   = false;
     renderLoading();
     LOG(`Running check — type=${type === OT_CONTACT ? "Contact" : "Company"}, id=${id}`);
 
     try {
       let matches = [];
+      let curForHours = null; // record data handed to the hours check after render
 
       if (type === OT_CONTACT) {
         const cur = await fetchCurrentRecord(OT_CONTACT, CONTACT_PROPS, id);
         if (runId !== currentRunId) return;
         // No data (transient) — remove widget so the watchdog re-runs shortly.
         if (!cur) { LOG("No record data yet — watchdog will retry"); removeWidget(); return; }
+        curForHours = cur;
         const [linkedCustomer, coMatches, ctMatches] = await Promise.all([
           checkLinkedCompanyCustomer(cur.associatedcompanyid, cur.company),
           findUnlinkedCompanies(cur),
@@ -590,6 +776,7 @@
         const cur = await fetchCurrentRecord(OT_COMPANY, COMPANY_PROPS, id);
         if (runId !== currentRunId) return;
         if (!cur) { LOG("No record data yet — watchdog will retry"); removeWidget(); return; }
+        curForHours = cur;
         const dupeMatches = await findDuplicateCompanies(cur);
         if (runId !== currentRunId) return;
         // If this company is itself a customer, prepend a self-customer marker
@@ -613,6 +800,8 @@
       lastResult = { matches };
       lastResultAt = Date.now();
       render(matches);
+      // Widget is on screen — now look up their business hours in the background
+      if (curForHours) checkBusinessHours(curForHours).catch((e) => LOG("hours check error:", e.message));
     } catch (e) {
       if (runId !== currentRunId) return;
       console.warn("[Pearl Dupe Checker] Error:", e);
