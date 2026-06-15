@@ -575,8 +575,8 @@
     const card = document.createElement("div");
     card.className = "pdc-card" + (m.strong ? " pdc-card-strong" : "");
     const isConnectedCustomer = m.linkedCustomer || m.selfRecord;
-    const customerMismatch    = m.customer !== m.curIsCustomer; // one is customer, one isn't
-    const isInactiveStrong    = m.strong && m.active === false && !customerMismatch;
+    const customerInvolved    = m.customer || m.curIsCustomer; // either record is a customer
+    const isInactiveStrong    = m.strong && m.active === false && !customerInvolved;
     const severityText  = isConnectedCustomer ? "Pearl customer" : m.strong ? "Likely duplicate found" : "Name overlap";
     const severityClass = isConnectedCustomer ? "pdc-sev-customer"
       : m.strong && !isInactiveStrong ? "pdc-sev-likely"    // red — active dupe
