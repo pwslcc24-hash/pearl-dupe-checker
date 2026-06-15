@@ -125,10 +125,12 @@ function parseTextHours(html) {
     }
   }
 
-  // Pass 2: comma-listed days sharing one time range — "Mon, Wed: 7AM – 5PM"
+  // Pass 2: listed days sharing one time range — "Mon, Wed: 7AM – 5PM"
+  //         also handles & and "and" as separators: "Mon, Thurs & Friday: 8AM to 5PM"
   const DAY_WORD = "(?:sun|mon|tue|tues|wed|thu|thur|thurs|fri|sat)[a-z]*\\.?";
+  const DAY_SEP  = "\\s*(?:,|&|and)\\s*";
   const reComma = new RegExp(
-    `\\b((?:${DAY_WORD}\\s*,\\s*)+${DAY_WORD})\\s*:?\\s*(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?\\s*(?:[-–—]|to|until)\\s*(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)\\b`,
+    `\\b((?:${DAY_WORD}${DAY_SEP})+${DAY_WORD})\\s*:?\\s*(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?\\s*(?:[-–—]|to|until)\\s*(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)\\b`,
     "gi"
   );
   while ((m = reComma.exec(text)) && n++ < 50) {
@@ -138,7 +140,7 @@ function parseTextHours(html) {
       const alt = toMin(`${m[2]}:${m[3] || "00"} pm`);
       if (alt != null && alt < c) o = alt;
     }
-    m[1].split(/\s*,\s*/).forEach((d) => {
+    m[1].split(/\s*(?:,|&|and)\s*/i).forEach((d) => {
       addInterval(days, DAY_IDX[d.trim().replace(/\.$/, "").toLowerCase()], o, c);
     });
   }
