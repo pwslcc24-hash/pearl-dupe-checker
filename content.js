@@ -605,8 +605,8 @@
     const connectedCustomer   = matches.filter((m) => m.linkedCustomer || m.selfRecord);
     const dupes               = matches.filter((m) => !m.linkedCustomer && !m.selfRecord);
     const strongDupes         = dupes.filter((m) => m.strong);
-    const activeStrongDupes   = strongDupes.filter((m) => m.active !== false); // has activity → red
-    const inactiveStrongDupes = strongDupes.filter((m) => m.active === false);  // no activity → amber
+    const activeStrongDupes   = strongDupes.filter((m) => m.active !== false || m.customer || m.curIsCustomer); // activity or customer → red
+    const inactiveStrongDupes = strongDupes.filter((m) => m.active === false && !m.customer && !m.curIsCustomer); // no activity, no customer → amber
     const nameOnlyDupes       = dupes.filter((m) => !m.strong); // name-only — stays green
 
     let state, label;
