@@ -96,7 +96,10 @@ function parseTextHours(html) {
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
     .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;|&#\d+;|&amp;/g, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&nbsp;/gi, " ").replace(/&#160;/g, " ")
+    .replace(/&ndash;/gi, "–").replace(/&mdash;/gi, "—")
+    .replace(/&#(\d+);/g, (_, c) => +c === 160 ? " " : String.fromCharCode(+c))
     .replace(/([ap])\.m\./gi, "$1m")
     .replace(/\s+/g, " ");
 
