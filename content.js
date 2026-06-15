@@ -212,7 +212,7 @@
       }
       if (!reasons.length) return acc;
       const customer = isCustomer(co);
-      const active = !!(co.hs_last_activity_date);
+      const active = !!(co.hs_last_activity_date) || !!(cur.hs_last_activity_date);
       const meta = [co.phone, co.domain || co.website, co.state].filter(Boolean).join(" · ");
       acc.push({ objectType: OT_COMPANY, name: co.name || "(no name)", meta, href: recordUrl(OT_COMPANY, co.id), typeLabel: customer ? "Company · CUSTOMER" : "Company", reasons, strong, active, customer });
       return acc;
@@ -279,7 +279,7 @@
       const cp = normPhone(cur.phone), dp = normPhone(cand.phone);
       if (cp && dp && cp === dp) { reasons.push("same phone"); strong = true; }
       if (!reasons.length) return acc;
-      const active = !!(cand.hs_last_activity_date);
+      const active = !!(cand.hs_last_activity_date) || !!(cur.hs_last_activity_date);
       acc.push({ objectType: OT_CONTACT, name: `${cand.firstname || ""} ${cand.lastname || ""}`.trim() || cand.email || "(no name)", meta: [cand.email, cand.phone, cand.company].filter(Boolean).join(" · "), href: recordUrl(OT_CONTACT, cand.id), typeLabel: "Contact", reasons, strong, active, customer: false });
       return acc;
     }, []).sort((a, b) => b.strong === a.strong ? 0 : b.strong ? 1 : -1);
@@ -334,7 +334,7 @@
       }
       if (!reasons.length) return acc;
       const customer = isCustomer(cand);
-      const active = !!(cand.hs_last_activity_date);
+      const active = !!(cand.hs_last_activity_date) || !!(cur.hs_last_activity_date);
       acc.push({ objectType: OT_COMPANY, name: cand.name || "(no name)", meta: [cand.phone, cand.domain || cand.website].filter(Boolean).join(" · "), href: recordUrl(OT_COMPANY, cand.id), typeLabel: customer ? "Company · CUSTOMER" : "Company", reasons, strong, active, customer });
       return acc;
     }, []).sort((a, b) => b.customer !== a.customer ? (b.customer ? 1 : -1) : (b.strong === a.strong ? 0 : b.strong ? 1 : -1));
@@ -575,7 +575,7 @@
     const card = document.createElement("div");
     card.className = "pdc-card" + (m.strong ? " pdc-card-strong" : "");
     const isConnectedCustomer = m.linkedCustomer || m.selfRecord;
-    const isInactiveStrong    = m.strong && m.active === false;
+    const isInactiveStrong    = m.strong && m.active === false && !m.customer;
     const severityText  = isConnectedCustomer ? "Pearl customer" : m.strong ? "Likely duplicate found" : "Name overlap";
     const severityClass = isConnectedCustomer ? "pdc-sev-customer"
       : m.strong && !isInactiveStrong ? "pdc-sev-likely"    // red — active dupe
