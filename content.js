@@ -765,14 +765,19 @@
         // No data (transient) — remove widget so the watchdog re-runs shortly.
         if (!cur) { LOG("No record data yet — watchdog will retry"); removeWidget(); return; }
         curForHours = cur;
-        const [linkedCustomer, coMatches, ctMatches] = await Promise.all([
-          checkLinkedCompanyCustomer(cur.associatedcompanyid, cur.company),
-          findUnlinkedCompanies(cur),
-          findDuplicateContacts(cur),
-        ]);
+        const linkedCustomer = await checkLinkedCompanyCustomer(cur.associatedcompanyid, cur.company);
         if (runId !== currentRunId) return;
-        // Linked company customer check goes first — highest priority
-        matches = [...(linkedCustomer ? [linkedCustomer] : []), ...coMatches, ...ctMatches];
+        if (linkedCustomer) {
+          // Contact is already at a customer company — no need to surface other dupes
+          matches = [linkedCustomer];
+        } else {
+          const [coMatches, ctMatches] = await Promise.all([
+            findUnlinkedCompanies(cur),
+            findDuplicateContacts(cur),
+          ]);
+          if (runId !== currentRunId) return;
+          matches = [...coMatches, ...ctMatches];
+        }
 
       } else if (type === OT_COMPANY) {
         const cur = await fetchCurrentRecord(OT_COMPANY, COMPANY_PROPS, id);
