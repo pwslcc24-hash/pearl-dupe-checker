@@ -527,7 +527,7 @@
       LOG("Hours lookup: nothing found", resp && resp.error ? `(${resp.error})` : "");
     } else {
       hoursDays   = resp.days;
-      hoursTz     = tzForState(cur.state);
+      hoursTz     = tzForState(cur.state) || tzForState(resp.pageState || "");
       hoursSource = resp.source || "";
       LOG(`Hours found via ${resp.source} — ${computeOpenStatus(hoursDays, hoursTz).open ? "OPEN" : "CLOSED"} now`);
     }
@@ -547,7 +547,12 @@
   }
   function applyPos(el) {
     const pos = loadPos();
-    if (pos) { el.style.right = Math.max(4, pos.right) + "px"; el.style.top = Math.max(4, pos.top) + "px"; }
+    if (pos) {
+      const clampedRight = Math.min(Math.max(4, pos.right), window.innerWidth - 80);
+      const clampedTop   = Math.min(Math.max(4, pos.top),   window.innerHeight - 80);
+      el.style.right = clampedRight + "px";
+      el.style.top   = clampedTop   + "px";
+    }
   }
   function makeDraggable(wrap, handle) {
     handle.addEventListener("mousedown", (e) => {

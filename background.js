@@ -190,7 +190,20 @@ function findHoursSubpages(siteRoot, rootHtml) {
   return [...candidates].filter((u) => u !== siteRoot && u !== siteRoot + "/");
 }
 
-// Returns { days, pageUrl } — pageUrl is the exact URL the hours were read from.
+// Scan page text for a "City, ST 12345" pattern and return the 2-letter state abbreviation.
+// Used as a timezone fallback when the HubSpot record's state field is blank.
+function extractStateAbbr(html) {
+  const text = html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ");
+  const m = text.match(/,\s*([A-Z]{2})\s+\d{5}\b/);
+  return m ? m[1] : null;
+}
+
+// Returns { days, pageUrl, pageState } — pageUrl is the exact URL the hours were read from;
+// pageState is a 2-letter US state abbreviation extracted from the page (may be null).
 async function fetchHours(siteRoot) {
   // Normalise: try with and without www.
   const rootUrls = [siteRoot];
@@ -218,11 +231,11 @@ async function fetchHours(siteRoot) {
       const textDays = parseTextHours(html);
       if (textDays) {
         console.log("[Pearl Dupe Checker] text hours found on subpage:", url);
-        return { days: textDays, pageUrl: url };
+        return { days: textDays, pageUrl: url, pageState: extractStateAbbr(html) };
       }
       if (!jsonLdFallback) {
         const jsonDays = parseJsonLd(html);
-        if (jsonDays) jsonLdFallback = { days: jsonDays, pageUrl: url };
+        if (jsonDays) jsonLdFallback = { days: jsonDays, pageUrl: url, pageState: extractStateAbbr(html) };
       }
     } catch (e) {}
   }
@@ -233,7 +246,7 @@ async function fetchHours(siteRoot) {
 
   // 2. Fall back to root page — text first, then JSON-LD
   const days = parseTextHours(rootHtml) || parseJsonLd(rootHtml);
-  if (days) return { days, pageUrl: rootUrl };
+  if (days) return { days, pageUrl: rootUrl, pageState: extractStateAbbr(rootHtml) };
 
   throw new Error("no_hours_on_page");
 }
@@ -273,11 +286,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
   if (msg.type === "checkHours") {
     (async () => {
-      let days = null, source = "";
+      let days = null, source = "", pageState = null;
       if (msg.site) {
         try {
           const result = await fetchHours(msg.site);
-          days = result.days; source = result.pageUrl;
+          days = result.days; source = result.pageUrl; pageState = result.pageState || null;
         } catch (e) { console.log("[Pearl Dupe Checker] hours from site failed:", e.message); }
       }
       if (!days && msg.query) {
@@ -285,14 +298,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         for (const u of urls.slice(0, 2)) {
           try {
             const result = await fetchHours(u);
-            days = result.days; source = result.pageUrl;
+            days = result.days; source = result.pageUrl; pageState = result.pageState || null;
             break;
           } catch (e) {}
         }
       }
       if (days) {
         console.log("[Pearl Dupe Checker] hours found via", source);
-        sendResponse({ ok: true, days, source });
+        sendResponse({ ok: true, days, source, pageState });
       } else {
         sendResponse({ ok: false, error: "no_hours_found" });
       }
