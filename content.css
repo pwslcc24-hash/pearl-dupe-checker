@@ -156,11 +156,11 @@
   text-transform: uppercase;
   cursor: default;
 }
-#pearl-dupe-widget .pdc-prod-sell {
+#pearl-dupe-widget .pdc-prod-has {
   background: #1e293b;
   color: #f8fafc;
 }
-#pearl-dupe-widget .pdc-prod-has {
+#pearl-dupe-widget .pdc-prod-sell {
   background: #f1f5f9;
   color: #94a3b8;
 }

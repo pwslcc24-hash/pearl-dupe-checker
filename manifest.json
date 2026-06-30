@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Pearl Dupe Checker",
-  "version": "1.5.27",
+  "version": "1.5.28",
   "description": "Duplicate warning + open/closed hours on HubSpot contact and company records.",
   "permissions": ["cookies"],
   "host_permissions": [
