@@ -35,6 +35,10 @@
     "hs_parent_company_id",   // used to detect parent/child/sibling relationships
     "hs_last_activity_date",  // used to detect if record has been worked
     "notes_last_updated",     // fallback: company-level notes/activity date
+    "notable_status",         // "Enterprise (DSO)", "Multi-office", "KOL"
+    "primary_segment",        // "Domestic - Enterprise" / "Domestic - SMB"
+    "number_of_locations",    // Pearl custom — integer, 10+ = enterprise DSO territory
+    "account_status_is_active", // "false" = reliably churned; blank = unknown (new customers often not set)
   ];
 
   // ── HubSpot API ────────────────────────────────────────────────────────────
@@ -159,7 +163,15 @@
       .replace(/\b(llc|inc|corp|ltd|dds|dmd|pa|pc|pllc|dental|dentistry|group|associates|practice)\b/g, "")
       .replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
   }
+  function isFormerCustomer(co) {
+    if (!co || co.account_status_is_active !== "false") return false;
+    if (norm(co.lifecyclestage) === "customer") return true;
+    const products = [co.products, co.pearl_products, co.active_products, co.current_products];
+    return products.some((f) => f && f.trim());
+  }
+
   function isCustomer(co) {
+    if (co.account_status_is_active === "false") return false; // churned — explicitly inactive
     if (norm(co.lifecyclestage) === "customer") return true;
     if (norm(co.account_status) === "active")   return true;
     const products = [co.products, co.pearl_products, co.active_products, co.current_products];
@@ -373,11 +385,49 @@
   })();
   function tzForState(state) { return STATE_TZ[norm(state).replace(/\s+/g, "")] || ""; }
 
+  // Named DSO accounts owned by Pearl's enterprise team — SDRs should not cold-call these.
+  // Source: Spencer Ellena account list (Q2 2026) + SDR training knowledge base.
+  const ENTERPRISE_DSO_NAMES = [
+    "heartland dental", "synergy dental partners", "sonrava health",
+    "western dental", "brident dental", "smile doctors", "affordable care",
+    "dental care alliance", "smile source", "unified smiles", "freedom dental",
+    "specialized dental partners", "nadg", "gen4 dental", "lone peak dental",
+    "salt dental", "american dental partners", "interdent", "gentle dental",
+    "signature dental partners", "specialty1 partners", "benevis", "sage dental",
+    "prosmile", "dental365", "cornerstone dental", "beacon oral specialists",
+    "the smilist", "imagen dental", "smile partners usa", "passion dental",
+    "community dental partners", "smile design dentistry", "chord specialty dental",
+    "p1 dental", "kids dental brands", "west coast dental", "smile brands",
+    "eastern dental", "peak dental services", "sga dental",
+  ];
+
+  // Returns "enterprise" (route to DSO team), "dso" (SDR can work, multi-location),
+  // or null (single practice, normal SDR target).
+  function detectDso(cur) {
+    if (!cur) return null;
+    const seg     = norm(cur.primary_segment  || "");
+    const notable = norm(cur.notable_status   || "");
+    const locs    = parseInt(cur.number_of_locations || "0") || 0;
+    const name    = norm(cur.name || "");
+
+    // primary_segment "Domestic - Enterprise" or notable_status containing DSO/Enterprise
+    const enterpriseSeg = seg.includes("enterprise") ||
+      notable.includes("enterprise") || notable.includes("dso");
+
+    // Named account on the enterprise team's list
+    const namedEnterprise = ENTERPRISE_DSO_NAMES.some((n) => name.includes(n));
+
+    if (locs >= 10 || enterpriseSeg || namedEnterprise) return "enterprise";
+    if (locs >= 2) return "dso";
+    return null;
+  }
+
   let hoursKey      = null;  // record key the cached hours belong to
   let hoursDays     = null;  // { dayIdx(0=Sun) : [{o, c}] } minutes since midnight
   let hoursTz       = "";
   let hoursSource   = "";    // URL of the page the hours were found on (the proof)
   let hoursFetched  = false; // true once the check has completed (success or fail)
+  let dsoRecord     = null;  // current record snapshot used for DSO pill
 
   // Recomputed on every pill render so a long-open tab flips open→closed correctly
   function computeOpenStatus(days, tz) {
@@ -428,6 +478,56 @@
       head.insertBefore(pill, head.querySelector(".pdc-controls"));
     }
     return pill;
+  }
+
+  function getOrCreateDsoPill(head) {
+    let pill = head.querySelector(".pdc-dso");
+    if (!pill) {
+      pill = document.createElement("span");
+      pill.className = "pdc-dso";
+      pill.addEventListener("click", (e) => e.stopPropagation());
+      // DSO pill goes before the hours pill (or before controls if no hours pill yet)
+      head.insertBefore(pill, head.querySelector(".pdc-hours") || head.querySelector(".pdc-controls"));
+    }
+    return pill;
+  }
+
+  function updateDsoPill() {
+    const head = document.querySelector(`#${WIDGET_ID} .pdc-head`);
+    if (!head || !dsoRecord) return;
+    const dsoType = detectDso(dsoRecord);
+    if (!dsoType) return;
+    const pill = getOrCreateDsoPill(head);
+    if (dsoType === "enterprise") {
+      pill.textContent = "DSO";
+      pill.title = "Large DSO — route to enterprise team, do not cold call";
+      pill.className = "pdc-dso pdc-dso-enterprise";
+    } else {
+      pill.textContent = "DSO";
+      pill.title = "Multi-location DSO (under 9 locations — SDR territory)";
+      pill.className = "pdc-dso pdc-dso-small";
+    }
+  }
+
+  function getOrCreateExCustomerPill(head) {
+    let pill = head.querySelector(".pdc-ex-customer");
+    if (!pill) {
+      pill = document.createElement("span");
+      pill.className = "pdc-ex-customer";
+      pill.addEventListener("click", (e) => e.stopPropagation());
+      head.insertBefore(pill, head.querySelector(".pdc-hours") || head.querySelector(".pdc-controls"));
+    }
+    return pill;
+  }
+
+  function updateExCustomerPill() {
+    const head = document.querySelector(`#${WIDGET_ID} .pdc-head`);
+    if (!head || !dsoRecord) return;
+    if (!isFormerCustomer(dsoRecord)) return;
+    const pill = getOrCreateExCustomerPill(head);
+    pill.textContent = "EX-CUSTOMER";
+    pill.title = "Previously a Pearl customer — account_status_is_active is false";
+    pill.className = "pdc-ex-customer";
   }
 
   function updateHoursPill() {
@@ -695,7 +795,9 @@
     wrap.appendChild(body);
 
     document.body.appendChild(wrap);
-    updateHoursPill(); // restore open/closed pill if we already have hours for this record
+    updateHoursPill();       // restore open/closed pill if we already have hours for this record
+    updateDsoPill();         // show DSO badge if applicable
+    updateExCustomerPill();  // show EX-CUSTOMER badge if churned
 
     // ── Collapse toggle ──
     function setCollapsed(v) {
@@ -757,6 +859,7 @@
     lastResultAt   = 0;
     widgetExpanded = false;
     hoursFetched   = false;
+    dsoRecord      = null;
     renderLoading();
     LOG(`Running check — type=${type === OT_CONTACT ? "Contact" : "Company"}, id=${id}`);
 
@@ -811,6 +914,7 @@
       LOG(`Duplicate check refreshed — ${matches.length} match(es):`, matches.map((m) => `${m.typeLabel} "${m.name}" [${m.reasons.join(", ")}]`));
       lastResult = { matches };
       lastResultAt = Date.now();
+      dsoRecord = curForHours; // set before render so updateDsoPill() can read it
       render(matches);
       // Widget is on screen — now look up their business hours in the background
       if (curForHours) checkBusinessHours(curForHours).catch((e) => LOG("hours check error:", e.message));
