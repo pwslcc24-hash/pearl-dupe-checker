@@ -417,8 +417,8 @@
     // Named account on the enterprise team's list
     const namedEnterprise = ENTERPRISE_DSO_NAMES.some((n) => name.includes(n));
 
-    if (locs >= 10 || enterpriseSeg || namedEnterprise) return "enterprise";
-    if (locs >= 2) return "dso";
+    // 9+ locations = SDR handoff threshold; 10+ = HubSpot enterprise protection
+    if (locs >= 9 || enterpriseSeg || namedEnterprise) return "enterprise";
     return null;
   }
 
@@ -498,15 +498,9 @@
     const dsoType = detectDso(dsoRecord);
     if (!dsoType) return;
     const pill = getOrCreateDsoPill(head);
-    if (dsoType === "enterprise") {
-      pill.textContent = "DSO";
-      pill.title = "Large DSO — route to enterprise team, do not cold call";
-      pill.className = "pdc-dso pdc-dso-enterprise";
-    } else {
-      pill.textContent = "DSO";
-      pill.title = "Multi-location DSO (under 9 locations — SDR territory)";
-      pill.className = "pdc-dso pdc-dso-small";
-    }
+    pill.textContent = "DSO";
+    pill.title = "9+ locations — route to enterprise team, do not cold call";
+    pill.className = "pdc-dso pdc-dso-enterprise";
   }
 
   function updateHoursPill() {
