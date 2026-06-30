@@ -773,12 +773,7 @@
     head.appendChild(controls);
     wrap.appendChild(head);
 
-    // ── Body ──
-    const body = document.createElement("div");
-    body.className = "pdc-body";
-    body.style.display = !collapsed ? "" : "none";
-
-    // ── Product row ──
+    // ── Product row (always visible) ──
     const prods = detectProducts(dsoRecord);
     if (prods) {
       const prodRow = document.createElement("div");
@@ -790,8 +785,13 @@
         pill.title = prods[key] ? `Has ${key}` : `Can sell ${key}`;
         prodRow.appendChild(pill);
       }
-      body.appendChild(prodRow);
+      wrap.appendChild(prodRow);
     }
+
+    // ── Body ──
+    const body = document.createElement("div");
+    body.className = "pdc-body";
+    body.style.display = !collapsed ? "" : "none";
 
     if (total > 0) {
       matches.slice(0, 15).forEach((m) => body.appendChild(buildCard(m)));
