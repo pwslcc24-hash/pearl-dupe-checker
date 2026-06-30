@@ -405,6 +405,25 @@
 
   // Returns "enterprise" (route to DSO team), "dso" (SDR can work, multi-location),
   // or null (single practice, normal SDR target).
+  const PRODUCT_DEFS = [
+    { key: "SO",  signals: ["sod", "second opinion"] },
+    { key: "PI",  signals: ["practice intell", "practice intel"] },
+    { key: "Pre", signals: ["precheck"] },
+    { key: "VO",  signals: ["voice"] },
+  ];
+
+  function detectProducts(co) {
+    if (!co) return null;
+    const raw = [co.products, co.pearl_products, co.active_products, co.current_products]
+      .filter(Boolean).join(";").toLowerCase();
+    if (!raw) return null;
+    const result = {};
+    for (const { key, signals } of PRODUCT_DEFS) {
+      result[key] = signals.some((s) => raw.includes(s));
+    }
+    return result;
+  }
+
   function detectDso(cur) {
     if (!cur) return null;
     const seg     = norm(cur.primary_segment  || "");
@@ -758,6 +777,22 @@
     const body = document.createElement("div");
     body.className = "pdc-body";
     body.style.display = !collapsed ? "" : "none";
+
+    // ── Product row ──
+    const prods = detectProducts(dsoRecord);
+    if (prods) {
+      const prodRow = document.createElement("div");
+      prodRow.className = "pdc-products";
+      for (const { key } of PRODUCT_DEFS) {
+        const pill = document.createElement("span");
+        pill.textContent = key;
+        pill.className = "pdc-prod " + (prods[key] ? "pdc-prod-has" : "pdc-prod-sell");
+        pill.title = prods[key] ? `Has ${key}` : `Can sell ${key}`;
+        prodRow.appendChild(pill);
+      }
+      body.appendChild(prodRow);
+    }
+
     if (total > 0) {
       matches.slice(0, 15).forEach((m) => body.appendChild(buildCard(m)));
     } else {
