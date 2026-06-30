@@ -165,13 +165,13 @@
   }
   function isFormerCustomer(co) {
     if (!co || co.account_status_is_active !== "false") return false;
-    if (norm(co.lifecyclestage) === "customer") return true;
+    // If products are set the inactive flag is stale — treat as current customer
     const products = [co.products, co.pearl_products, co.active_products, co.current_products];
-    return products.some((f) => f && f.trim());
+    if (products.some((f) => f && f.trim())) return false;
+    return norm(co.lifecyclestage) === "customer";
   }
 
   function isCustomer(co) {
-    if (co.account_status_is_active === "false") return false; // churned — explicitly inactive
     if (norm(co.lifecyclestage) === "customer") return true;
     if (norm(co.account_status) === "active")   return true;
     const products = [co.products, co.pearl_products, co.active_products, co.current_products];
@@ -509,27 +509,6 @@
     }
   }
 
-  function getOrCreateExCustomerPill(head) {
-    let pill = head.querySelector(".pdc-ex-customer");
-    if (!pill) {
-      pill = document.createElement("span");
-      pill.className = "pdc-ex-customer";
-      pill.addEventListener("click", (e) => e.stopPropagation());
-      head.insertBefore(pill, head.querySelector(".pdc-hours") || head.querySelector(".pdc-controls"));
-    }
-    return pill;
-  }
-
-  function updateExCustomerPill() {
-    const head = document.querySelector(`#${WIDGET_ID} .pdc-head`);
-    if (!head || !dsoRecord) return;
-    if (!isFormerCustomer(dsoRecord)) return;
-    const pill = getOrCreateExCustomerPill(head);
-    pill.textContent = "EX-CUSTOMER";
-    pill.title = "Previously a Pearl customer — account_status_is_active is false";
-    pill.className = "pdc-ex-customer";
-  }
-
   function updateHoursPill() {
     const head = document.querySelector(`#${WIDGET_ID} .pdc-head`);
     if (!head) return;
@@ -728,8 +707,12 @@
       // Priority 3: connected/linked customer, no strong dupes
       state = "blue";
       label = "Existing customer";
+    } else if (isFormerCustomer(dsoRecord)) {
+      // Priority 4: ex-customer — account_status_is_active=false, no products, was lifecyclestage=customer
+      state = "purple";
+      label = "EX-CUSTOMER";
     } else {
-      // Priority 4: clean — name-only overlaps don't change the badge color
+      // Priority 5: clean — name-only overlaps don't change the badge color
       state = "green";
       label = "✓ No duplicates found";
     }
@@ -795,9 +778,8 @@
     wrap.appendChild(body);
 
     document.body.appendChild(wrap);
-    updateHoursPill();       // restore open/closed pill if we already have hours for this record
-    updateDsoPill();         // show DSO badge if applicable
-    updateExCustomerPill();  // show EX-CUSTOMER badge if churned
+    updateHoursPill(); // restore open/closed pill if we already have hours for this record
+    updateDsoPill();   // show DSO badge if applicable
 
     // ── Collapse toggle ──
     function setCollapsed(v) {
