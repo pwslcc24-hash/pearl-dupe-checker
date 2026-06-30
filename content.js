@@ -165,14 +165,16 @@
   }
   function isFormerCustomer(co) {
     if (!co || co.account_status_is_active !== "false") return false;
-    // If products are set the inactive flag is stale — treat as current customer
+    // Active customers with a stale inactive flag still have lifecyclestage = "customer"
+    if (norm(co.lifecyclestage) === "customer") return false;
+    // Products still set after churn — proves they were a Pearl customer
     const products = [co.products, co.pearl_products, co.active_products, co.current_products];
-    if (products.some((f) => f && f.trim())) return false;
-    return norm(co.lifecyclestage) === "customer";
+    return products.some((f) => f && f.trim());
   }
 
   function isCustomer(co) {
-    if (norm(co.lifecyclestage) === "customer") return true;
+    if (norm(co.lifecyclestage) === "customer") return true; // lifecycle stage wins over stale inactive flag
+    if (co.account_status_is_active === "false") return false; // churned — lifecycle was cleared
     if (norm(co.account_status) === "active")   return true;
     const products = [co.products, co.pearl_products, co.active_products, co.current_products];
     if (products.some((f) => f && f.trim()))    return true;
