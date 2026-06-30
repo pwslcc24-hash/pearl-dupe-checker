@@ -773,8 +773,8 @@
     head.appendChild(controls);
     wrap.appendChild(head);
 
-    // ── Product row (always visible) ──
-    const prods = detectProducts(dsoRecord);
+    // ── Product row — only for existing customers ──
+    const prods = dsoRecord && isCustomer(dsoRecord) ? detectProducts(dsoRecord) : null;
     if (prods) {
       const prodRow = document.createElement("div");
       prodRow.className = "pdc-products";
