@@ -740,11 +740,6 @@
     const controls = document.createElement("span");
     controls.className = "pdc-controls";
 
-    const toggleBtn = document.createElement("button");
-    toggleBtn.className = "pdc-btn pdc-toggle";
-    toggleBtn.title = "Expand / collapse";
-    toggleBtn.textContent = collapsed ? "▸" : "▾";
-
     const refreshBtn = document.createElement("button");
     refreshBtn.className = "pdc-btn pdc-refresh";
     refreshBtn.title = "Re-check now";
@@ -755,7 +750,7 @@
     closeBtn.title = "Dismiss";
     closeBtn.textContent = "×";
 
-    controls.append(refreshBtn, toggleBtn, closeBtn);
+    controls.append(refreshBtn, closeBtn);
     head.appendChild(controls);
     wrap.appendChild(head);
 
@@ -781,11 +776,9 @@
     function setCollapsed(v) {
       widgetExpanded = !v;
       wrap.classList.toggle("pdc-collapsed", v);
-      toggleBtn.textContent = v ? "▸" : "▾";
       body.style.display = v ? "none" : "";
     }
     head.addEventListener("click", (e) => { if (!e.target.closest(".pdc-btn, .pdc-hours")) setCollapsed(!wrap.classList.contains("pdc-collapsed")); });
-    toggleBtn.addEventListener("click", (e) => { e.stopPropagation(); setCollapsed(!wrap.classList.contains("pdc-collapsed")); });
 
     // ── Re-check ──
     refreshBtn.addEventListener("click", (e) => {
