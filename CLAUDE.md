@@ -1,0 +1,55 @@
+# Pearl Dupe Checker
+
+Chrome MV3 extension for HubSpot (Contact `0-1`, Company `0-2`, Deal `0-3`, Lead `0-136`).
+Files: `content.js` (all logic), `background.js` (business-hours lookup), `content.css`, `manifest.json`, `popup.html`.
+
+No build step — `content.js` is loaded directly by the manifest. "Building" just means bumping the version and re-zipping (see below).
+
+## Match/classification logic — source of truth
+
+Every decision function below follows the same pattern: a `xWithReason(co)` function returns `{ result, reason }`, and `x(co)` / `explainX(co)` are thin wrappers over it. **Never edit the boolean logic without updating the reason string in the same function** — they're one function specifically so they can't drift apart.
+
+- **`isCustomer(co)`** — `lifecyclestage="Customer"` OR `location_status="Active"`. `location_status="Inactive"` overrides everything (never a customer). Exception: if `lifecyclestage="Customer"` but `previously_reversed_deal="Yes"`, also require `recent_deal_close_date` to be set (a confirmed real deal) — otherwise don't trust the label, fall through to `isReversed`. This exception was added 2026-08-21 after checking real data: of 1,049 companies with that contradiction, only 385 (37%) had any real product usage, and *all 385* also had `recent_deal_close_date` set. The other 664 had neither — stale "customer" labels.
+- **`isFormerCustomer(co)`** — "cancelled customer, could win back." Requires `location_status="Inactive"`. Then either `lifecyclestage="Customer"` (real churn) or a product text field is set (rollback after lifecycle got reset).
+- **`isReversed(co)`** — "signed but never went live." Checked in order: not if `isCustomer`; not if an open deal exists (`number_of_associated_open_deals > 0`) or a recent demo request (60d window) — both mean a new cycle started, old history is moot; **then** `onboarding_status` in `{Cancelled, Reversing}` or `number_of_open_reversal_tickets > 0` → reversed (checked *before* `isFormerCustomer` so a specific current signal doesn't get masked by the vaguer inactive+has-products heuristic); then `isFormerCustomer` wins over a bare `previously_reversed_deal="Yes"` (no date attached, could predate a real customer relationship).
+- **`detectDso(cur)`** — `number_of_locations >= 10`, or `primary_segment`/`notable_status` contains "enterprise"/"dso", or name matches `ENTERPRISE_DSO_NAMES`.
+- **`detectProducts(co)`** — per-product (`SO`/`PI`/`Pre`/`VO`) "Has X": a positive application-count field (`number_of_*_applications`) always counts; the free-text `products`/`pearl_products`/`active_products`/`current_products`/`products_based_on_associated_deals` fields **only count if `isCustomer(co)` is true** — the `products` field gets populated at deal-creation time (what's being pitched), not purchase time, so on a non-customer it's not proof of ownership. ~95% of ALL customers *and* prospects have something in it, so it's not a differentiator on its own.
+- **`compatCheck(key, co)`** — imaging/PMS upsell-compatibility color (sellable/caveat/blocked/unknown), from static tables (`IMAGING_COMPAT`, `PMS_PI_COMPAT`, `PMS_RCM_COMPAT`, `PMS_VOICE_COMPAT`) keyed on the portal's exact `imaging_software`/`practice_management_system__cloned_` enum values. These are a point-in-time snapshot of Pearl's compatibility spreadsheet — re-sync when it changes.
+- **ROE (`checkRoe`, `checkRoeForClosedLostDeal`, `checkRoeForStaleDemoScheduled`)** — see the big comment block above `checkRoe` in `content.js`; it cites the official Rules of Engagement PDF section by section. Key numbers: 14-day last-call/activity window, 30-day demo-completed window (extendable if there's a future task within 14 days), 60-day Closed Lost cooldown / 48-hour if reason=Neglected, 24h-overdue-task-with-no-contact-in-14d = fair game.
+- **Duplicate matching (phone/domain)** — `GENERIC_DOMAINS` and `GENERIC_PHONES` are exclusion lists so a shared inbox provider or a shared DSO corporate switchboard doesn't get treated as "same company." `isJunkPhonePattern()` also auto-catches all-same-digit and sequential placeholder numbers without needing a hardcoded entry. Match strength (`m.strong`/`m.linkedCustomer`/`m.selfRecord`) matters: loose name-only matches must NEVER be trusted for reversed/product/customer data bleed-through (confirmed bugs: "Lifetime Dental" and "Kissimmee Dental" both bled data from unrelated similarly-named companies before this was scoped).
+
+## Key HubSpot field names (this portal specifically)
+
+- `location_status` is the REAL "Account Status" field. `account_status` and `customer_status`/`subscription_status` do **not exist** in this portal — confirmed dead, don't reference them.
+- `hubspot_owner_id` resolves via the hardcoded `OWNER_NAMES` map — **this roster goes stale** (a missing id silently breaks name-dependent logic; owner-based ROE rules must key off the id being present, not off the name resolving).
+- `dealstage` is a **per-pipeline enum** — the same stage label has different raw numeric ids in different pipelines. Always go through `DEALSTAGE_LABELS`/`dealStageLabel()`/`normStage()`, never compare raw ids directly.
+- `recent_deal_close_date` = date of the company's last CLOSED WON deal (validated reliable — see isCustomer above).
+- `notes_next_activity_date` / `hs_last_open_task_date` — real HubSpot rollups for "future task" / "last open task due date," used for the ROE staleness rules. `hs_last_open_task_date` only exists on COMPANY, not CONTACT.
+- `hs_last_activity_date` is often blank on Company records where `notes_last_updated` is populated — always fall back: `co.hs_last_activity_date || co.notes_last_updated`.
+
+## Known edge cases / gotchas
+
+- No live browser access in this dev environment (Chrome automation tools are blocked/unavailable). Verification is done two ways: (1) extract the exact function body from `content.js` via a small Node script, populate with real field values pulled through the HubSpot MCP tools, and run it standalone; (2) `node --check content.js` for syntax. There is no way to load the extension and click around from here — say so explicitly rather than claiming a UI verification that didn't happen.
+- HubSpot's activity-feed DOM has no whitespace between sibling elements — a name capture regex will run straight into the next element's text ("Paul BillsCall - Busy..."). The fix pattern: require a lowercase run after each word's leading capital (stops at the glued-on capital), not a blanket `\w*`.
+- `ADMIN_MODE` (top of `content.js`, `false` in the shipped build) swaps every pill's tooltip for a full explanation of the exact logic/field values that produced it. Never ship with it `true`. Build the admin variant with a copy + `sed` flip, not by editing the real source (see below).
+
+## Before calling something "done"
+
+1. `node --check content.js` (and `background.js` if touched) — syntax.
+2. Re-run the standalone Node regression pattern against every previously-confirmed real-account case relevant to what changed, plus any new case just found. Pattern:
+   ```bash
+   node -e '
+   const fs = require("fs");
+   const src = fs.readFileSync("content.js", "utf8");
+   function extract(re) { return src.match(re)[0]; }
+   // extract() out the specific function(s) touched + their dependencies, join, write to /tmp, require, run test cases
+   '
+   ```
+3. Verify against **real** HubSpot data via the HubSpot MCP tools (`search_crm_objects`, `query_crm_data`) — don't trust a hypothesis until it's checked against actual records. `query_crm_data` supports SQL-ish `GROUP BY`/`COUNT(*)` (no `HAVING`, no `COUNT(DISTINCT)`) — useful for "how many records have X" sanity checks before changing logic.
+4. Bump `version` in `manifest.json`.
+5. Rebuild the zip:
+   ```bash
+   rm -f /tmp/pearl-dupe-checker-webstore.zip && cd ~/pearl-dupe-checker && \
+   zip -r /tmp/pearl-dupe-checker-webstore.zip . --exclude '*.git*' --exclude '__pycache__/*'
+   ```
+6. Never send a zip to Colin/Carson/Matt/anyone on Slack without showing Porter the exact file + message first and getting explicit approval, even if he says "send it to X."

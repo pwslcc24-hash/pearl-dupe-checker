@@ -35,6 +35,30 @@ function addInterval(days, idx, o, c) {
   (days[idx] = days[idx] || []).push({ o, c });
 }
 
+// Resolve an open/close pair whose AM/PM markers may be missing, e.g. "7:30-4:30".
+// Medical/dental offices open in the morning and close in the afternoon/evening,
+// so when a marker is absent we infer the meridiem that yields a sane daytime shift.
+// hStr/mStr are the captured hour/minute strings; ap is "am"/"pm"/undefined.
+function resolveHours(oH, oM, oAP, cH, cM, cAP) {
+  oH = +oH; oM = +(oM || 0); cH = +cH; cM = +(cM || 0);
+  oAP = (oAP || "").toLowerCase(); cAP = (cAP || "").toLowerCase();
+  const hm = (h, m, pm) => ((pm && h !== 12) ? h + 12 : (!pm && h === 12 ? 0 : h)) * 60 + m;
+  // Open: honor an explicit marker; otherwise assume AM (offices rarely open in the afternoon).
+  const o = oAP ? hm(oH, oM, oAP === "pm") : hm(oH, oM, false);
+  let c;
+  if (cAP) {
+    c = hm(cH, cM, cAP === "pm");
+  } else {
+    // No close marker: prefer a PM close (the usual case), falling back to AM,
+    // choosing whichever lands after open with a believable 1–16h shift.
+    const cPM = hm(cH, cM, true), cAM = hm(cH, cM, false);
+    if (cPM > o && cPM - o <= 16 * 60) c = cPM;
+    else if (cAM > o && cAM - o >= 60) c = cAM;
+    else c = cPM;
+  }
+  return { o, c };
+}
+
 function expandDayRange(a, b) {
   const out = [];
   for (let i = a; ; i = (i + 1) % 7) {
@@ -104,24 +128,35 @@ function parseTextHours(html) {
     .replace(/\s+/g, " ");
 
   const days = {};
-  const re = /\b(sun|mon|tue|tues|wed|thu|thur|thurs|fri|sat)[a-z]*\.?\s*(?:(?:[-–—]|to|thru|through)\s*(sun|mon|tue|tues|wed|thu|thur|thurs|fri|sat)[a-z]*\.?)?\s*:?\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:[-–—]|to|until)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/gi;
+  // Close-time AM/PM is optional — many sites write bare ranges like "7:30-4:30".
+  // resolveHours() infers the meridiem in that case. A time still needs a ":mm" or an
+  // explicit am/pm to match, which keeps bare address/phone numbers from being read as hours.
+  const re = /\b(sun|mon|tue|tues|wed|thu|thur|thurs|fri|sat)[a-z]*\.?\s*(?:(?:[-–—]|to|thru|through)\s*(sun|mon|tue|tues|wed|thu|thur|thurs|fri|sat)[a-z]*\.?)?\s*:?\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:[-–—]|to|until)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?(?=\b|\s|$)/gi;
+
+  // A time range with no leading day label — e.g. the "2:00pm - 5:00pm" half of
+  // "Tue: 8:00am - 1:00pm | 2:00pm - 5:00pm". A time starts with a digit while a day
+  // starts with a letter, so this only ever eats extra ranges, never the next day's line.
+  // Requires a ":mm" on at least the open side so a lone "- 5" can't trigger it.
+  const extraRe = /^[\s|,;/&]*(?:and\s+)?(\d{1,2}):(\d{2})\s*(am|pm)?\s*(?:[-–—]|to|until)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?(?=\b|\s|$)/i;
 
   let m, n = 0;
   while ((m = re.exec(text)) && n++ < 50) {
-    let o = toMin(`${m[3]}:${m[4] || "00"} ${m[5] || "am"}`);
-    const c = toMin(`${m[6]}:${m[7] || "00"} ${m[8]}`);
-    // "1:00 - 5:00pm" with no am/pm on the open time → if am gives an absurdly
-    // long day, the open time was actually pm
-    if (!m[5] && o != null && c != null && c - o > 13 * 60) {
-      const alt = toMin(`${m[3]}:${m[4] || "00"} pm`);
-      if (alt != null && alt < c) o = alt;
-    }
+    // Skip garbage matches with no time signal at all (no minutes, no meridiem on either side)
+    if (!m[4] && !m[5] && !m[7] && !m[8]) continue;
+    const { o, c } = resolveHours(m[3], m[4], m[5], m[6], m[7], m[8]);
     const a = DAY_IDX[m[1].toLowerCase()];
-    if (m[2]) {
-      const b = DAY_IDX[m[2].toLowerCase()];
-      if (a != null && b != null) expandDayRange(a, b).forEach((i) => addInterval(days, i, o, c));
-    } else {
-      addInterval(days, a, o, c);
+    const dayIdxs = m[2]
+      ? ((b) => (a != null && b != null ? expandDayRange(a, b) : []))(DAY_IDX[m[2].toLowerCase()])
+      : (a != null ? [a] : []);
+    dayIdxs.forEach((i) => addInterval(days, i, o, c));
+
+    // Grab any additional same-day ranges (split shifts / lunch breaks) that
+    // immediately follow, before the next day label appears.
+    let ex, guard = 0;
+    while (dayIdxs.length && (ex = extraRe.exec(text.slice(re.lastIndex))) && guard++ < 6) {
+      const r2 = resolveHours(ex[1], ex[2], ex[3], ex[4], ex[5], ex[6]);
+      dayIdxs.forEach((i) => addInterval(days, i, r2.o, r2.c));
+      re.lastIndex += ex[0].length; // consume so the outer loop doesn't re-scan it
     }
   }
 
@@ -130,16 +165,12 @@ function parseTextHours(html) {
   const DAY_WORD = "(?:sun|mon|tue|tues|wed|thu|thur|thurs|fri|sat)[a-z]*\\.?";
   const DAY_SEP  = "\\s*(?:,|&|and)\\s*";
   const reComma = new RegExp(
-    `\\b((?:${DAY_WORD}${DAY_SEP})+${DAY_WORD})\\s*:?\\s*(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?\\s*(?:[-–—]|to|until)\\s*(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)\\b`,
+    `\\b((?:${DAY_WORD}${DAY_SEP})+${DAY_WORD})\\s*:?\\s*(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?\\s*(?:[-–—]|to|until)\\s*(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?(?=\\b|\\s|$)`,
     "gi"
   );
   while ((m = reComma.exec(text)) && n++ < 50) {
-    let o = toMin(`${m[2]}:${m[3] || "00"} ${m[4] || "am"}`);
-    const c = toMin(`${m[5]}:${m[6] || "00"} ${m[7]}`);
-    if (!m[4] && o != null && c != null && c - o > 13 * 60) {
-      const alt = toMin(`${m[2]}:${m[3] || "00"} pm`);
-      if (alt != null && alt < c) o = alt;
-    }
+    if (!m[3] && !m[4] && !m[6] && !m[7]) continue;
+    const { o, c } = resolveHours(m[2], m[3], m[4], m[5], m[6], m[7]);
     m[1].split(/\s*(?:,|&|and)\s*/i).forEach((d) => {
       addInterval(days, DAY_IDX[d.trim().replace(/\.$/, "").toLowerCase()], o, c);
     });
@@ -251,25 +282,6 @@ async function fetchHours(siteRoot) {
   throw new Error("no_hours_on_page");
 }
 
-// No website on the record → DuckDuckGo HTML search, try the top results
-async function searchSiteUrls(query) {
-  try {
-    const html = await fetchPage("https://html.duckduckgo.com/html/?q=" + encodeURIComponent(query));
-    const urls = [];
-    const re = /uddg=([^&"']+)/g;
-    let m;
-    while ((m = re.exec(html)) && urls.length < 5) {
-      try {
-        const u = decodeURIComponent(m[1]);
-        if (/duckduckgo|facebook\.|instagram\.|linkedin\.|youtube\.|twitter\.|x\.com/.test(u)) continue;
-        if (!urls.includes(u)) urls.push(u);
-      } catch (e) {}
-    }
-    return urls;
-  } catch (e) {
-    return [];
-  }
-}
 
 // ── Message router ───────────────────────────────────────────────────────────
 
@@ -284,29 +296,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true; // async response
   }
 
+
+  // Only ever called with a known site on the record — content.js no longer
+  // sends a name-based query to fall back to a web search for. "No website
+  // on file" means no scan happens at all, not "guess via search."
   if (msg.type === "checkHours") {
     (async () => {
-      let days = null, source = "", pageState = null;
-      if (msg.site) {
-        try {
-          const result = await fetchHours(msg.site);
-          days = result.days; source = result.pageUrl; pageState = result.pageState || null;
-        } catch (e) { console.log("[Pearl Dupe Checker] hours from site failed:", e.message); }
-      }
-      if (!days && msg.query) {
-        const urls = await searchSiteUrls(msg.query);
-        for (const u of urls.slice(0, 2)) {
-          try {
-            const result = await fetchHours(u);
-            days = result.days; source = result.pageUrl; pageState = result.pageState || null;
-            break;
-          } catch (e) {}
-        }
-      }
-      if (days) {
-        console.log("[Pearl Dupe Checker] hours found via", source);
-        sendResponse({ ok: true, days, source, pageState });
-      } else {
+      try {
+        const result = await fetchHours(msg.site);
+        console.log("[Pearl Dupe Checker] hours found via", result.pageUrl);
+        sendResponse({ ok: true, days: result.days, source: result.pageUrl, pageState: result.pageState || null });
+      } catch (e) {
+        console.log("[Pearl Dupe Checker] hours from site failed:", e.message);
         sendResponse({ ok: false, error: "no_hours_found" });
       }
     })();

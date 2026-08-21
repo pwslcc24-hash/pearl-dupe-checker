@@ -44,7 +44,6 @@
 #pearl-dupe-widget .pdc-hours:hover { text-decoration: underline; }
 #pearl-dupe-widget .pdc-hours-open    { background: rgba(255,255,255,0.92); color: #16a34a; }
 #pearl-dupe-widget .pdc-hours-closed  { background: #7f1d1d; color: #fff; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.45); }
-#pearl-dupe-widget .pdc-hours-unknown { background: rgba(255,255,255,0.18); color: rgba(255,255,255,0.7); font-weight: 600; }
 #pearl-dupe-widget .pdc-hours-loading { background: rgba(255,255,255,0.18); color: rgba(255,255,255,0.5); font-size: 16px; letter-spacing: 0; padding: 0 6px; }
 #pearl-dupe-widget .pdc-hours-lunch   { background: #92400e; color: #fef3c7; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.3); }
 
@@ -66,12 +65,55 @@
   box-shadow: inset 0 0 0 1px rgba(255,255,255,0.3);
 }
 
+/* ── ROE (Rules of Engagement) caution ──────────────────────────────────── */
+#pearl-dupe-widget .pdc-roe {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  padding: 2px 7px;
+  border-radius: 9px;
+  flex-shrink: 0;
+  margin-right: 2px;
+  cursor: default;
+  background: #fef9c3;
+  color: #854d0e;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.08);
+}
+/* Appended to document.body (not nested under #pearl-dupe-widget, which has
+   overflow: hidden and would clip it) — floats over the whole page instead,
+   and shows instantly on hover instead of the browser's slow title-delay. */
+.pdc-roe-tooltip {
+  position: fixed;
+  background: #1e293b;
+  color: #fff;
+  padding: 5px 9px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: normal;
+  max-width: 340px;
+  box-shadow: 0 3px 10px rgba(0,0,0,0.3);
+  z-index: 2147483647;
+  pointer-events: none;
+}
+#pearl-dupe-widget .pdc-card-roe {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 6px;
+  margin: 0 0 4px;
+  background: #fef9c3;
+  color: #854d0e;
+}
+
 #pearl-dupe-widget.pdc-loading .pdc-head { background: #7c8aa0; }
 #pearl-dupe-widget.pdc-green   .pdc-head { background: #16a34a; }
 #pearl-dupe-widget.pdc-amber   .pdc-head { background: #d97706; }
 #pearl-dupe-widget.pdc-red     .pdc-head { background: #dc2626; }
 #pearl-dupe-widget.pdc-blue    .pdc-head { background: #1d4ed8; }
 #pearl-dupe-widget.pdc-purple  .pdc-head { background: #4c1d95; }
+#pearl-dupe-widget.pdc-reversed .pdc-head { background: #be185d; } /* signed up, never onboarded */
 
 /* Subtle name-hint appended to green label — same name ≠ a real dupe */
 #pearl-dupe-widget .pdc-name-hint {
@@ -163,6 +205,19 @@
 #pearl-dupe-widget .pdc-prod-sell {
   background: #f1f5f9;
   color: #94a3b8;
+}
+#pearl-dupe-widget .pdc-prod-unknown {
+  background: transparent;
+  color: #cbd5e1;
+  box-shadow: inset 0 0 0 1px #e2e8f0;
+}
+#pearl-dupe-widget .pdc-prod-caveat {
+  background: #fef9c3;
+  color: #854d0e;
+}
+#pearl-dupe-widget .pdc-prod-blocked {
+  background: #fee2e2;
+  color: #991b1b;
 }
 
 /* ── Green clear note ────────────────────────────────────────────────────── */
