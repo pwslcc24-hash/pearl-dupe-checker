@@ -52,6 +52,15 @@
     "most_recent_demo_request_date",   // ROE: recent inbound demo = inbound is handling it
     "hs_latest_disqualified_lead_date", // ROE: 60-day disqualify-recycle cooldown
     "notes_next_activity_date", // ROE: future task within 14 days — extends demo-completed window past 30 days
+    // Compat-check fields — Contact carries its OWN imaging/PMS answers
+    // (e.g. from a form fill), separate from the linked Company's. Note the
+    // portal uses a DIFFERENT internal name for imaging on Contact vs.
+    // Company (imaging_software_new vs. imaging_software) for what's the
+    // same concept — aliased onto `imaging_software` right after fetch (see
+    // below) so compatCheck() can read one consistent field name regardless
+    // of object type. PMS's internal name happens to already match Company's.
+    "imaging_software_new",
+    "practice_management_system__cloned_",
   ];
   const COMPANY_PROPS = [
     "name", "phone", "domain", "website", "hubspot_owner_id", "state", "city",
@@ -75,6 +84,9 @@
     "number_of_associated_open_deals", // ROE: owner + open deal(s) = don't poach
     "notes_next_activity_date", // ROE: future task within 14 days — extends demo-completed window past 30 days
     "hs_last_open_task_date",   // ROE: due date of the last OPEN task — >24h overdue + no contact 14d+ = free game
+    "onboarding_complete_date", // ROE: AE has priority for 90 days from onboarding completion (not deal close date)
+    "number_of_associated_closed_won_deals", // ROE: onboarding-priority only applies to the FIRST closed-won deal — a repeat/expansion customer's later re-onboarding shouldn't reset the clock
+    "deal_owner_of_most_recent_closed_deal", // ROE: the specific AE who gets priority — only unambiguous because of the closed_won===1 gate above (their most recent closed-won deal IS their first)
     "imaging_software",         // enum — drives SO/PI upsell-compatibility signal
     "practice_management_system__cloned_", // enum, label "Practice Management System" — drives PI/RCM/Voice compatibility
     "native",                   // "Yes"/"No" — picks the native-vs-standalone compatibility row where the sheet splits on it
@@ -381,10 +393,17 @@
     "79254842": "Pearl", "79364751": "Joseph Britt", "79364752": "Esther Dorsey",
     "79370229": "Christian Hawkins", "79527250": "Mia Pecek", "79910839": "Aali Rehman",
     "79958839": "Ronald So", "80338024": "Sarah Schuhmacher", "80592157": "Kaladent Dental",
-    "80652203": "Price Change", "80684835": "Nicolas",
+    "80652203": "Price Change", "80684835": "Nicolas", "715298350": "Ethan Sherman",
   };
   function ownerName(id) { return OWNER_NAMES[String(id || "")] || ""; }
 
+  // Porter, 2026-09-03: the AE who closed/onboarded an account has priority
+  // for 90 days — the clock starts at ONBOARDING COMPLETION (onboarding_complete_date,
+  // seen on the onboarding ticket and rolled up to the Company), not the deal
+  // close date. This is the main ROE flag when it applies — checked first in
+  // checkRoe() below, ahead of every other signal (still yields to the
+  // 24h-overdue-task "all rules go out the window" exception).
+  const ROE_ONBOARDING_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
   const ROE_DEMO_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;         // completed demo / upcoming meeting
   const ROE_DISQUALIFIED_WINDOW_MS = 60 * 24 * 60 * 60 * 1000; // 60-day recycle
   const ROE_DEMO_REQUEST_WINDOW_MS = 60 * 24 * 60 * 60 * 1000;
@@ -401,16 +420,30 @@
   // doesn't exist on Contact) — so this only fires where that data exists.
   const ROE_OVERDUE_TASK_GRACE_MS = 24 * 60 * 60 * 1000;
 
+  // HubSpot's internal search API serializes plain "Date" properties (no
+  // time-of-day, e.g. onboarding_complete_date) as a raw epoch-MILLISECOND
+  // string ("1782691200000") — `new Date()` on that string alone returns
+  // Invalid Date (confirmed via real browser console, 2026-09-03: this
+  // silently broke the onboarding-priority ROE rule for a real account).
+  // "DateTime" properties come back as normal ISO strings and parse fine
+  // either way. Every raw HubSpot date value in this file should go through
+  // this, not a bare `new Date(...)`, to be safe regardless of property type.
+  function parseHsDate(v) {
+    if (v == null || v === "") return NaN;
+    const s = String(v).trim();
+    return /^\d+$/.test(s) ? Number(s) : new Date(s).getTime();
+  }
+
   // PDF: >24h-overdue open task + no contact in the last 14 days = "all
   // rules go out the window" for that record — checkRoe() should return
   // nothing at all. Deliberately conservative: missing task/contact data
   // never triggers this (absence of data isn't evidence of "free game").
   function roeOverdueTaskFreeGame(co) {
     if (!co || !co.hs_last_open_task_date) return false;
-    const dueMs = new Date(co.hs_last_open_task_date).getTime();
+    const dueMs = parseHsDate(co.hs_last_open_task_date);
     if (!dueMs || Date.now() - dueMs < ROE_OVERDUE_TASK_GRACE_MS) return false;
     const lastContact = co.hs_last_activity_date || co.notes_last_updated;
-    const lastContactMs = lastContact ? new Date(lastContact).getTime() : null;
+    const lastContactMs = lastContact ? parseHsDate(lastContact) : null;
     if (!lastContactMs) return false;
     return Date.now() - lastContactMs >= ROE_FOLLOWUP_WINDOW_MS;
   }
@@ -456,7 +489,7 @@
   // check at all) was flagging a record whose real activity was a year old.
   function withinWindowMs(dateVal, windowMs) {
     if (!dateVal) return null;
-    const ms = new Date(dateVal).getTime();
+    const ms = parseHsDate(dateVal);
     const diff = Date.now() - ms;
     if (!ms || diff < 0 || diff >= windowMs) return null;
     return ms;
@@ -466,6 +499,33 @@
   // stage-only triggers ("Active opportunity/SQL/MQL" used to fire with zero
   // regard for how old the record was). Fast — uses data already fetched via
   // the API, so it applies to duplicate match cards too.
+  // Standalone (not just a branch inside checkRoe below) so updateRoePill()
+  // can check it BEFORE the DOM-scraped call/meeting override too — this is
+  // the main ROE flag when it applies, full stop, not just "first among the
+  // rules inside checkRoe." A freshly-onboarded account's AE priority isn't
+  // superseded by someone else scheduling a call with them. Still yields to
+  // the 24h-overdue-task "all rules go out the window" exception.
+  function checkRoeOnboardingPriority(co) {
+    if (!co) return null;
+    if (roeOverdueTaskFreeGame(co)) return null;
+    const onboardMs = withinWindowMs(co.onboarding_complete_date, ROE_ONBOARDING_WINDOW_MS);
+    if (!onboardMs) return null;
+    // Porter, 2026-09-03: "only first closed won should trigger" — a repeat
+    // customer's later expansion/renewal deal gets its own re-onboarding
+    // ticket, which would refresh onboarding_complete_date without this being
+    // a NEW account at all. Only trust the 90-day clock when this is their
+    // one and only closed-won deal ever (their original signing).
+    const closedWonCount = parseInt(co.number_of_associated_closed_won_deals || "0", 10) || 0;
+    if (closedWonCount !== 1) return null;
+    // Prefer the AE who actually owns the closed-won deal over the Company's
+    // generic hubspot_owner_id (can be a different person — e.g. an SDR, or
+    // stale reassignment). Only unambiguous because of the closed_won===1
+    // gate above: their most recent closed-won deal IS their first.
+    const ownerId = co.deal_owner_of_most_recent_closed_deal || co.hubspot_owner_id || "";
+    const ownerLabel = ownerName(ownerId) || (ownerId ? "the assigned owner" : "");
+    return { reason: `Onboarding completed ${new Date(onboardMs).toLocaleDateString()} (<90 days) — ${ownerLabel || "AE"} has priority`, severity: "red" };
+  }
+
   function checkRoe(co) {
     if (!co) return null;
     const ownerId = co.hubspot_owner_id || "";
@@ -478,9 +538,15 @@
     // the window" for this record — skip everything else below.
     if (roeOverdueTaskFreeGame(co)) return null;
 
+    // Onboarding-priority is the main ROE flag when it applies — checked
+    // first here too, so card-level checkRoe() calls (buildCard, etc.) get
+    // the same answer as the header pill.
+    const onboarding = checkRoeOnboardingPriority(co);
+    if (onboarding) return onboarding;
+
     // "Completed Demo within ROE" — demo completed in the last 30 days.
     if (co.demo_completed_date) {
-      const demoMs = new Date(co.demo_completed_date).getTime();
+      const demoMs = parseHsDate(co.demo_completed_date);
       const sinceDemo = demoMs ? Date.now() - demoMs : null;
       if (sinceDemo != null && sinceDemo >= 0 && sinceDemo < ROE_DEMO_WINDOW_MS) {
         return { reason: `Completed demo ${new Date(demoMs).toLocaleDateString()}${ownerLabel ? ` — ${ownerLabel}` : ""}` };
@@ -490,8 +556,8 @@
       if (sinceDemo != null && sinceDemo >= ROE_DEMO_WINDOW_MS) {
         const thirtyDayMark = demoMs + ROE_DEMO_WINDOW_MS;
         const lastActivity = co.hs_last_activity_date || co.notes_last_updated;
-        const lastActivityMs = lastActivity ? new Date(lastActivity).getTime() : null;
-        const nextTaskMs = co.notes_next_activity_date ? new Date(co.notes_next_activity_date).getTime() : null;
+        const lastActivityMs = lastActivity ? parseHsDate(lastActivity) : null;
+        const nextTaskMs = co.notes_next_activity_date ? parseHsDate(co.notes_next_activity_date) : null;
         const activeAfter30 = lastActivityMs && lastActivityMs > thirtyDayMark;
         const futureTaskSoon = nextTaskMs && nextTaskMs > Date.now() && nextTaskMs - Date.now() < ROE_FOLLOWUP_WINDOW_MS;
         if (activeAfter30 && futureTaskSoon) {
@@ -519,7 +585,7 @@
     const openDeals = parseInt(co.number_of_associated_open_deals || "0", 10) || 0;
     if (ownerId && openDeals > 0) {
       const lastActivity = co.hs_last_activity_date || co.notes_last_updated;
-      const lastActivityMs = lastActivity ? new Date(lastActivity).getTime() : null;
+      const lastActivityMs = lastActivity ? parseHsDate(lastActivity) : null;
       const recentlyWorked = lastActivityMs && Date.now() - lastActivityMs < ROE_FOLLOWUP_WINDOW_MS;
       if (recentlyWorked) {
         return { reason: `${ownerLabel} has ${openDeals} open deal${openDeals === 1 ? "" : "s"} — don't poach` };
@@ -574,7 +640,7 @@
     if (!deal) return false;
     const label = normStage(dealStageLabel(deal.dealstage));
     if (label !== "demoscheduled") return false;
-    const demoMs = deal.upcoming_demo_date ? new Date(deal.upcoming_demo_date).getTime() : null;
+    const demoMs = deal.upcoming_demo_date ? parseHsDate(deal.upcoming_demo_date) : null;
     if (!demoMs) return false; // no demo date on file — can't judge staleness, leave it alone
     return Date.now() - demoMs >= ROE_FOLLOWUP_WINDOW_MS;
   }
@@ -583,21 +649,38 @@
   // its own ROE signals (owner, open deals, etc.) can be checked too — per
   // Colin: "Always check the company for activity not JUST the contact."
   async function fetchLinkedCompanyForRoe(linkedId, companyName) {
+    const curNormForId = companyName ? normName(companyName) : "";
     if (linkedId) {
       try {
         const rows = await hsSearch(OT_COMPANY, COMPANY_PROPS, [{ filters: [{ property: "hs_object_id", operator: "IN", values: [linkedId] }] }]);
         const co = rows.map(flatten)[0];
-        if (co) return co;
-      } catch (e) {}
+        // Don't blindly trust the id-resolved company if it doesn't even
+        // match the contact's own "Company Name" text field — associatedcompanyid
+        // can be a contact's PRIMARY association that HubSpot auto-set to a
+        // generic domain-matched company (e.g. a personal .edu email pulling
+        // in a junk "nyu" record) while their REAL practice is only a
+        // secondary association. Confirmed real case, 2026-09-03: Ravinder
+        // Samdhu's associatedcompanyid pointed at "nyu" (closed_won=0) while
+        // his actual practice "Clarkson Village Dental Clinic" was only
+        // findable by name. If there's no companyName to sanity-check
+        // against, fall back to trusting the id (nothing better to go on).
+        if (co && (!curNormForId || normName(co.name) === curNormForId)) {
+          LOG(`fetchLinkedCompanyForRoe: found "${co.name}" by id ${linkedId}, onboarding_complete_date="${co.onboarding_complete_date || "(blank)"}"`);
+          return co;
+        }
+        if (co) LOG(`fetchLinkedCompanyForRoe: id ${linkedId} resolved to "${co.name}", which doesn't match contact's Company Name "${companyName}" — distrusting it, trying name search instead`);
+      } catch (e) { LOG(`fetchLinkedCompanyForRoe: id lookup failed: ${e.message}`); }
     }
     if (companyName) {
       try {
         const curNorm = normName(companyName);
         const rows = await hsSearch(OT_COMPANY, COMPANY_PROPS, null, companyName);
         const co = rows.map(flatten).find((c) => normName(c.name) === curNorm);
-        if (co) return co;
-      } catch (e) {}
+        if (co) { LOG(`fetchLinkedCompanyForRoe: found "${co.name}" by name match on "${companyName}", onboarding_complete_date="${co.onboarding_complete_date || "(blank)"}"`); return co; }
+        LOG(`fetchLinkedCompanyForRoe: name search for "${companyName}" returned ${rows.length} row(s), none matched normalized name "${curNorm}"`);
+      } catch (e) { LOG(`fetchLinkedCompanyForRoe: name lookup failed: ${e.message}`); }
     }
+    LOG(`fetchLinkedCompanyForRoe: no linked company found (linkedId="${linkedId || "(blank)"}", companyName="${companyName || "(blank)"}")`);
     return null;
   }
 
@@ -779,7 +862,16 @@
   // Check if the contact's linked company is a Pearl customer.
   // Tries by associatedcompanyid first, then falls back to searching by company name —
   // because associatedcompanyid isn't always returned by the CRM search API.
-  async function checkLinkedCompanyCustomer(linkedId, companyName) {
+  // The name-only fallback requires a corroborating signal (phone or email
+  // domain) before it's trusted — a bare name match (e.g. a contact's
+  // "Company" field coincidentally matching an unrelated real customer's
+  // name, like "Coco" vs. "COCO Dental") is not proof of an actual link.
+  async function checkLinkedCompanyCustomer(cur) {
+    const linkedId    = (cur.associatedcompanyid || "").trim();
+    const companyName = cur.company;
+    const phone       = normPhone(cur.phone);
+    const emailParts  = (cur.email || "").split("@");
+    const emailDomain = emailParts.length === 2 ? norm(emailParts[1]) : "";
     const seen = new Set();
     const candidates = [];
 
@@ -791,13 +883,22 @@
       } catch (e) {}
     }
 
-    // 2. Fall back to searching by company name (catches when associatedcompanyid is empty)
+    // 2. Fall back to searching by company name (catches when associatedcompanyid is empty).
+    // Name match alone isn't enough — also require matching phone or email domain
+    // so a generic/short name collision can't masquerade as a real linked company.
     if (companyName && !candidates.some(isCustomer)) {
       try {
         const curNorm = normName(companyName);
         const rows = await hsSearch(OT_COMPANY, COMPANY_PROPS, null, companyName);
         rows.map(flatten)
-          .filter((c) => normName(c.name) === curNorm && !seen.has(c.id))
+          .filter((c) => {
+            if (normName(c.name) !== curNorm || seen.has(c.id)) return false;
+            const coPhone  = normPhone(c.phone);
+            const coDomain = norm(c.domain || c.website || "");
+            const phoneMatches  = phone && coPhone && phone === coPhone && !isGenericPhone(phone);
+            const domainMatches = emailDomain && !GENERIC_DOMAINS.has(emailDomain) && coDomain && !GENERIC_DOMAINS.has(coDomain) && emailDomain === coDomain;
+            return phoneMatches || domainMatches;
+          })
           .forEach((c) => { seen.add(c.id); candidates.push(c); });
       } catch (e) {}
     }
@@ -1323,15 +1424,24 @@
   function updateRoePill(override) {
     const head = document.querySelector(`#${WIDGET_ID} .pdc-head`);
     if (!head || !dsoRecord) return;
-    const roe = roeStaleDemoScheduled
+    // Onboarding-priority outranks EVERYTHING below, including the
+    // DOM-scraped call/meeting override — an upcoming meeting someone else
+    // booked doesn't erase the AE's 90-day priority window.
+    const onboardingRoe = checkRoeOnboardingPriority(dsoRecord) || (roeLinkedCompany && checkRoeOnboardingPriority(roeLinkedCompany));
+    LOG(`updateRoePill: onboardingRoe=${onboardingRoe ? "YES — " + onboardingRoe.reason : "no"}; roeLinkedCompany=${roeLinkedCompany ? `"${roeLinkedCompany.name}" (onboarding_complete_date="${roeLinkedCompany.onboarding_complete_date || "(blank)"}", closed_won=${roeLinkedCompany.number_of_associated_closed_won_deals || "(blank)"})` : "not yet resolved"}; override=${override ? override.reason : "none"}`);
+    const roe = onboardingRoe || (roeStaleDemoScheduled
       ? override
-      : (roeDealOverride || override || checkRoe(dsoRecord) || (roeLinkedCompany && checkRoe(roeLinkedCompany)));
+      : (roeDealOverride || override || checkRoe(dsoRecord) || (roeLinkedCompany && checkRoe(roeLinkedCompany))));
     if (!roe) { const existing = head.querySelector(".pdc-roe"); if (existing) existing.remove(); return; }
     const pill = getOrCreateRoePill(head);
     pill.textContent = "⚠ ROE";
     // A native `title` tooltip has a slow, inconsistent browser delay before
     // it appears — use data-tip + CSS ::after instead so it shows instantly.
     pill.dataset.tip = roe.reason;
+    // Red for the strongest ROE signals (e.g. within the 90-day post-onboarding
+    // AE-priority window) — just the pill itself, not the whole widget header
+    // the way a customer/dupe match colors it.
+    pill.classList.toggle("pdc-roe-red", roe.severity === "red");
   }
 
   // Runs the slower DOM-scrape ROE pass and upgrades the pill if it finds a
@@ -1507,7 +1617,7 @@
     const roe = checkRoe(m.record);
     card.innerHTML =
       `<div class="pdc-card-severity ${severityClass}">${esc(severityText)}</div>` +
-      (roe ? `<div class="pdc-card-roe" title="${esc(roe.reason)}">⚠ ROE — ${esc(roe.reason)}</div>` : "") +
+      (roe ? `<div class="pdc-card-roe${roe.severity === "red" ? " pdc-card-roe-red" : ""}" title="${esc(roe.reason)}">⚠ ROE — ${esc(roe.reason)}</div>` : "") +
       `<div class="pdc-card-name">${esc(m.name)}<span class="pdc-card-type">${esc(m.typeLabel)}</span></div>` +
       (m.meta ? `<div class="pdc-card-meta">${esc(m.meta)}</div>` : "") +
       `<div class="pdc-card-reasons">${esc(m.reasons.join(", "))}</div>` +
@@ -1639,10 +1749,15 @@
     // matching "Ideal Dental Kissimmee" on word overlap alone) is an unrelated
     // business; its products aren't this record's products. Same scoping as
     // reversedCandidates above, for the same reason.
+    // A Contact can also carry its own imaging/PMS answers directly (aliased
+    // onto imaging_software above) even with no linked company at all — that's
+    // real compat data too, so it counts as an on-screen candidate just like
+    // a company-shaped record does.
     const isCompanyShaped = (co) => co && co.name !== undefined; // Contacts have no `name` field
+    const hasCompatData   = (co) => !!(co && (co.imaging_software || co.practice_management_system__cloned_));
     const showProductsFor = (m) => m.record && (m.strong || m.linkedCustomer || m.selfRecord) && (isCustomer(m.record) || isReversed(m.record));
     const productCandidates = [];
-    if (isCompanyShaped(dsoRecord)) productCandidates.push(dsoRecord);
+    if (isCompanyShaped(dsoRecord) || hasCompatData(dsoRecord)) productCandidates.push(dsoRecord);
     for (const m of matches) if (showProductsFor(m)) productCandidates.push(m.record);
     const customerRecord = productCandidates.find(hasProductData) || productCandidates[0] || null;
     const prods = customerRecord ? detectProducts(customerRecord) : null;
@@ -1806,6 +1921,9 @@
         if (runId !== currentRunId) return;
         // No data (transient) — remove widget so the watchdog re-runs shortly.
         if (!cur) { LOG("No record data yet — watchdog will retry"); removeWidget(); return; }
+        // Alias the Contact's own imaging field onto the name compatCheck()
+        // actually reads (imaging_software) — see CONTACT_PROPS comment.
+        if (!cur.imaging_software && cur.imaging_software_new) cur.imaging_software = cur.imaging_software_new;
         curForHours = cur;
         // Per Colin: "Always check the company for activity not JUST the
         // contact" — fetch the linked Company regardless of customer status
@@ -1813,7 +1931,7 @@
         fetchLinkedCompanyForRoe(cur.associatedcompanyid, cur.company).then((co) => {
           if (runId === currentRunId) { roeLinkedCompany = co; updateRoePill(); }
         }).catch(() => {});
-        const linkedCustomer = await checkLinkedCompanyCustomer(cur.associatedcompanyid, cur.company);
+        const linkedCustomer = await checkLinkedCompanyCustomer(cur);
         if (runId !== currentRunId) return;
         if (linkedCustomer) {
           // Contact is already at a customer company — no need to surface other dupes
